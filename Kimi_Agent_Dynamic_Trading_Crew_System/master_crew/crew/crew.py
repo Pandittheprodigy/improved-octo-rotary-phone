@@ -1,100 +1,146 @@
 """
-Master Trading Crew - Crew Orchestration
-Hierarchical multi-agent system for institutional-grade trade recommendations
+Master Trading Crew — Orchestration Engine
+Manages the flow: Layer 1 (Foundation) → Layer 2 (Specialists) → Layer 3 (Master)
+Uses SEQUENTIAL process with explicit context chaining for reliability.
 """
 from crewai import Crew, Process
-from crew.agents import create_agents
-from crew.tasks import create_tasks
-from utils.data_fetcher import fetch_all_data
-import streamlit as st
+from crew.agents import (
+    create_data_scientist,
+    create_global_news_analyst,
+    create_technical_analyst,
+    create_fundamental_analyst,
+    create_sentiment_analyst,
+    create_equity_research_analyst,
+    create_master_analyst,
+)
+from crew.tasks import (
+    create_data_validation_task,
+    create_global_macro_task,
+    create_technical_analysis_task,
+    create_fundamental_analysis_task,
+    create_sentiment_analysis_task,
+    create_equity_research_task,
+    create_master_synthesis_task,
+)
+from utils.data_fetcher import StockDataFetcher
 
 
 class MasterTradingCrew:
     """
-    Orchestrates the complete Master Trading Crew workflow.
-    Manages agent creation, task sequencing, and result compilation.
+    Institutional-grade multi-agent trading intelligence system.
+    7 agents, 7 tasks, 3-layer sequential execution with context chaining.
     """
     
-    def __init__(self, symbol: str):
-        self.symbol = symbol.upper()
-        self.agents = None
-        self.tasks = None
-        self.crew = None
-        self.data_context = None
+    def __init__(self, ticker: str):
+        self.ticker = ticker.upper()
+        self.data_fetcher = StockDataFetcher()
+        self.raw_data = None
         self.results = {}
+        
+        # Initialize all agents with their own API keys
+        self.agents = {
+            "data_scientist": create_data_scientist(),
+            "global_news_analyst": create_global_news_analyst(),
+            "technical_analyst": create_technical_analyst(),
+            "fundamental_analyst": create_fundamental_analyst(),
+            "sentiment_analyst": create_sentiment_analyst(),
+            "equity_research_analyst": create_equity_research_analyst(),
+            "master_analyst": create_master_analyst(),
+        }
     
-    def prepare_data(self):
-        """Phase 0: Fetch and prepare all data"""
-        with st.spinner("📊 Fetching market data and news..."):
-            self.data_context = fetch_all_data(self.symbol)
+    def fetch_data(self) -> dict:
+        """Fetch and format all market data."""
+        data = self.data_fetcher.get_stock_data(self.ticker)
+        if "error" in data:
+            return data
         
-        if "error" in self.data_context.get("raw_data", {}):
-            return False, self.data_context["raw_data"]["error"]
+        formatted = self.data_fetcher.format_for_agents(data)
+        news = self.data_fetcher.get_news_summary(self.ticker)
         
-        return True, "Data prepared successfully"
+        self.raw_data = {
+            "market_data": formatted,
+            "news": news,
+            "full_data": data,
+        }
+        return self.raw_data
     
-    def setup_crew(self):
-        """Setup the complete crew with agents and tasks"""
-        # Create all agents
-        self.agents = create_agents()
+    def build_crew(self) -> Crew:
+        """Build the crew with sequential process and explicit context chaining."""
+        raw_text = self.raw_data["market_data"] if self.raw_data else ""
         
-        # Create tasks with data context
-        self.tasks = create_tasks(self.agents, self.symbol, self.data_context)
+        # Layer 1: Data Foundation
+        data_task = create_data_validation_task(
+            self.agents["data_scientist"], self.ticker, raw_text
+        )
+        macro_task = create_global_macro_task(
+            self.agents["global_news_analyst"], self.ticker, raw_text
+        )
         
-        # Create the crew with sequential process (hierarchical flow)
-        self.crew = Crew(
+        # Layer 2: Specialist Analysis
+        tech_task = create_technical_analysis_task(
+            self.agents["technical_analyst"], self.ticker, raw_text
+        )
+        fund_task = create_fundamental_analysis_task(
+            self.agents["fundamental_analyst"], self.ticker, raw_text
+        )
+        sent_task = create_sentiment_analysis_task(
+            self.agents["sentiment_analyst"], self.ticker, raw_text
+        )
+        research_task = create_equity_research_task(
+            self.agents["equity_research_analyst"], self.ticker, raw_text
+        )
+        
+        # Layer 3: Master Synthesis
+        master_task = create_master_synthesis_task(
+            self.agents["master_analyst"], self.ticker, "[All analyst outputs will be injected here]"
+        )
+        
+        # Context chaining: Layer 2 depends on Layer 1
+        tech_task.context = [data_task, macro_task]
+        fund_task.context = [data_task, macro_task]
+        sent_task.context = [data_task, macro_task]
+        research_task.context = [data_task, macro_task]
+        
+        # Layer 3 depends on all Layer 2
+        master_task.context = [tech_task, fund_task, sent_task, research_task]
+        
+        # SEQUENTIAL process ensures reliable context passing
+        crew = Crew(
             agents=list(self.agents.values()),
-            tasks=self.tasks,
+            tasks=[data_task, macro_task, tech_task, fund_task, sent_task, research_task, master_task],
             process=Process.sequential,
             verbose=True,
             memory=True,
-            max_rpm=30,  # Rate limiting for API
-            cache=True,
+            max_rpm=10,
         )
+        
+        return crew
     
-    def run(self):
-        """Execute the complete crew workflow"""
-        # Step 1: Prepare data
-        success, message = self.prepare_data()
-        if not success:
-            return {"error": message}
+    def run(self) -> dict:
+        """Execute the full crew workflow."""
+        data_result = self.fetch_data()
+        if "error" in data_result:
+            return {"error": data_result["error"]}
         
-        # Step 2: Setup crew
-        self.setup_crew()
+        crew = self.build_crew()
+        result = crew.kickoff()
         
-        # Step 3: Execute
-        try:
-            with st.spinner("🧠 Master Crew analyzing... This may take 2-3 minutes..."):
-                result = self.crew.kickoff()
-                
-            # Compile comprehensive results
-            self.results = {
-                "symbol": self.symbol,
-                "company_name": self.data_context.get("raw_data", {}).get("company_name", self.symbol),
-                "current_price": self.data_context.get("raw_data", {}).get("current_price", 0),
-                "crew_output": result,
-                "raw_data": self.data_context.get("raw_data", {}),
-                "market_summary": self.data_context.get("market_summary", {}),
-                "earnings_data": self.data_context.get("earnings_data", {}),
-                "technical_indicators": self.data_context.get("raw_data", {}).get("technical_indicators", {}),
-                "news_items": self.data_context.get("news_items", []),
-            }
-            
-            return self.results
-            
-        except Exception as e:
-            return {"error": f"Crew execution error: {str(e)}"}
+        self.results = {
+            "ticker": self.ticker,
+            "raw_data": self.raw_data,
+            "crew_output": result,
+            "agent_outputs": {},
+        }
+        
+        # Extract individual task outputs
+        for task in crew.tasks:
+            if hasattr(task, 'output') and task.output:
+                self.results["agent_outputs"][task.agent.role] = str(task.output)
+        
+        return self.results
 
 
-def run_master_crew(symbol: str):
-    """
-    Convenience function to run the Master Trading Crew.
-    
-    Args:
-        symbol: Stock ticker symbol (e.g., 'AAPL')
-    
-    Returns:
-        Dictionary with complete analysis and trade recommendation
-    """
-    crew = MasterTradingCrew(symbol)
+def run_master_crew(ticker: str) -> dict:
+    """Convenience function to run the full crew analysis."""
+    crew = MasterTradingCrew(ticker)
     return crew.run()
