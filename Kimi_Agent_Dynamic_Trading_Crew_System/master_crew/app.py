@@ -1,21 +1,26 @@
 """
-Master Trading Crew - Streamlit Application
+Master Trading Crew — Streamlit Command Center
 Professional-grade trading analysis powered by AI multi-agent system
+Each agent uses its own dedicated NVIDIA NIM API key.
 """
 import streamlit as st
 import os
 import sys
 import json
 import re
+import traceback
+from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from crew.crew import run_master_crew
 from utils.data_fetcher import StockDataFetcher, DataPresentation
+from utils.llm_factory import get_all_agent_status, validate_all_keys, NVIDIA_AGENT_KEY_MAP
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
+import yfinance as yf
 
 
 # ============================================================
@@ -29,16 +34,13 @@ st.set_page_config(
 )
 
 # ============================================================
-# CUSTOM CSS - Professional Dark Theme
+# CUSTOM CSS — Professional Dark Theme
 # ============================================================
 st.markdown("""
 <style>
-    /* Global Theme */
     .stApp {
         background: linear-gradient(135deg, #0a0e1a 0%, #1a1f3a 50%, #0d1117 100%);
     }
-    
-    /* Typography */
     .main-title {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         font-size: 2.8rem;
@@ -50,7 +52,6 @@ st.markdown("""
         margin-bottom: 0.5rem;
         letter-spacing: -0.02em;
     }
-    
     .subtitle {
         font-size: 1.1rem;
         color: #94a3b8;
@@ -58,8 +59,6 @@ st.markdown("""
         margin-bottom: 2rem;
         font-weight: 400;
     }
-    
-    /* Cards */
     .metric-card {
         background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9));
         border: 1px solid rgba(99, 102, 241, 0.2);
@@ -69,7 +68,6 @@ st.markdown("""
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         backdrop-filter: blur(10px);
     }
-    
     .trade-card {
         background: linear-gradient(135deg, rgba(16, 30, 20, 0.95), rgba(10, 20, 15, 0.98));
         border: 2px solid rgba(34, 197, 94, 0.3);
@@ -78,13 +76,16 @@ st.markdown("""
         margin: 1.5rem 0;
         box-shadow: 0 12px 40px rgba(34, 197, 94, 0.1);
     }
-    
     .trade-card-short {
         background: linear-gradient(135deg, rgba(30, 15, 15, 0.95), rgba(20, 10, 10, 0.98));
         border: 2px solid rgba(239, 68, 68, 0.3);
         box-shadow: 0 12px 40px rgba(239, 68, 68, 0.1);
     }
-    
+    .trade-card-neutral {
+        background: linear-gradient(135deg, rgba(30, 25, 10, 0.95), rgba(20, 15, 5, 0.98));
+        border: 2px solid rgba(245, 158, 11, 0.3);
+        box-shadow: 0 12px 40px rgba(245, 158, 11, 0.1);
+    }
     .agent-card {
         background: rgba(30, 41, 59, 0.6);
         border: 1px solid rgba(99, 102, 241, 0.15);
@@ -93,8 +94,6 @@ st.markdown("""
         margin-bottom: 0.8rem;
         border-left: 4px solid #6366f1;
     }
-    
-    /* Section Headers */
     .section-header {
         font-size: 1.5rem;
         font-weight: 700;
@@ -103,29 +102,18 @@ st.markdown("""
         padding-bottom: 0.5rem;
         border-bottom: 2px solid rgba(99, 102, 241, 0.3);
     }
-    
     .agent-name {
         font-weight: 700;
         color: #818cf8;
         font-size: 1.1rem;
     }
-    
-    /* Price Display */
     .price-display {
         font-size: 3rem;
         font-weight: 800;
         color: #f8fafc;
     }
-    
-    .price-up {
-        color: #22c55e;
-    }
-    
-    .price-down {
-        color: #ef4444;
-    }
-    
-    /* Levels Display */
+    .price-up { color: #22c55e; }
+    .price-down { color: #ef4444; }
     .level-entry {
         background: rgba(34, 197, 94, 0.15);
         border: 1px solid rgba(34, 197, 94, 0.4);
@@ -133,7 +121,6 @@ st.markdown("""
         padding: 1rem;
         text-align: center;
     }
-    
     .level-stop {
         background: rgba(239, 68, 68, 0.15);
         border: 1px solid rgba(239, 68, 68, 0.4);
@@ -141,7 +128,6 @@ st.markdown("""
         padding: 1rem;
         text-align: center;
     }
-    
     .level-target {
         background: rgba(59, 130, 246, 0.15);
         border: 1px solid rgba(59, 130, 246, 0.4);
@@ -149,8 +135,6 @@ st.markdown("""
         padding: 1rem;
         text-align: center;
     }
-    
-    /* Conviction Meter */
     .conviction-high {
         background: linear-gradient(90deg, rgba(34, 197, 94, 0.2), rgba(34, 197, 94, 0.4));
         border: 1px solid rgba(34, 197, 94, 0.5);
@@ -158,7 +142,6 @@ st.markdown("""
         padding: 1rem 2rem;
         text-align: center;
     }
-    
     .conviction-medium {
         background: linear-gradient(90deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.4));
         border: 1px solid rgba(245, 158, 11, 0.5);
@@ -166,7 +149,6 @@ st.markdown("""
         padding: 1rem 2rem;
         text-align: center;
     }
-    
     .conviction-low {
         background: linear-gradient(90deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.4));
         border: 1px solid rgba(239, 68, 68, 0.5);
@@ -174,13 +156,6 @@ st.markdown("""
         padding: 1rem 2rem;
         text-align: center;
     }
-    
-    /* Sidebar */
-    .css-1d391kg {
-        background: linear-gradient(180deg, #0f172a, #1e293b);
-    }
-    
-    /* Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #6366f1, #7c3aed);
         color: white;
@@ -192,69 +167,31 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
         transition: all 0.3s ease;
     }
-    
     .stButton > button:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
     }
-    
-    /* Input */
     .stTextInput > div > div {
         background: rgba(30, 41, 59, 0.8);
         border: 2px solid rgba(99, 102, 241, 0.3);
         border-radius: 12px;
         color: #f1f5f9;
     }
-    
-    /* Progress */
     .stProgress > div > div {
         background: linear-gradient(90deg, #6366f1, #22c55e);
         border-radius: 10px;
     }
-    
-    /* Expander */
     .streamlit-expanderHeader {
         background: rgba(30, 41, 59, 0.6);
         border-radius: 10px;
         border: 1px solid rgba(99, 102, 241, 0.2);
     }
-    
-    /* Tables */
-    .dataframe {
-        background: rgba(30, 41, 59, 0.6) !important;
-        border-radius: 12px;
-        overflow: hidden;
-    }
-    
-    /* Scrollbar */
-    ::-webkit-scrollbar {
-        width: 8px;
-    }
-    
-    ::-webkit-scrollbar-track {
-        background: #0f172a;
-    }
-    
-    ::-webkit-scrollbar-thumb {
-        background: #6366f1;
-        border-radius: 4px;
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: rgba(30, 41, 59, 0.6);
-        border-radius: 10px 10px 0 0;
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        color: #94a3b8;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: rgba(99, 102, 241, 0.3) !important;
-        color: #f1f5f9 !important;
+    .api-ok { color: #22c55e; font-weight: bold; }
+    .api-missing { color: #ef4444; font-weight: bold; }
+    .api-key-display {
+        font-family: monospace;
+        font-size: 0.75rem;
+        color: #64748b;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -285,13 +222,14 @@ def extract_trade_details(output_text: str) -> dict:
     text = str(output_text)
     
     # Direction
-    if "LONG" in text.upper() and "SHORT" not in text.upper():
+    text_upper = text.upper()
+    if "LONG" in text_upper and "SHORT" not in text_upper:
         details["direction"] = "LONG"
-    elif "SHORT" in text.upper():
+    elif "SHORT" in text_upper:
         details["direction"] = "SHORT"
-    elif "BUY" in text.upper():
+    elif "BUY" in text_upper:
         details["direction"] = "LONG"
-    elif "SELL" in text.upper() and "SHORT" in text.upper():
+    elif "SELL" in text_upper and "SHORT" in text_upper:
         details["direction"] = "SHORT"
     
     # Conviction
@@ -323,7 +261,7 @@ def extract_trade_details(output_text: str) -> dict:
     if duration_match:
         details["duration"] = duration_match.group(1).strip()
     
-    # Rationale (first 500 chars of synthesis)
+    # Rationale
     rationale_match = re.search(r'(?:SYNTHESIS SUMMARY|synthesis summary)[:\s]+([^#]+)', text, re.IGNORECASE | re.DOTALL)
     if rationale_match:
         details["rationale"] = rationale_match.group(1).strip()[:500]
@@ -331,18 +269,14 @@ def extract_trade_details(output_text: str) -> dict:
     return details
 
 
-def render_price_chart(symbol: str, data: dict):
+def render_price_chart(symbol: str):
     """Render interactive price chart with indicators"""
     try:
-        fetcher = StockDataFetcher()
-        ticker = fetcher.get_stock_data(symbol)
-        
-        if "error" in ticker:
-            return
-        
-        # Get historical data
-        import yfinance as yf
         hist = yf.Ticker(symbol).history(period="3mo")
+        
+        if hist.empty:
+            st.warning("No chart data available")
+            return
         
         fig = make_subplots(
             rows=3, cols=1,
@@ -410,11 +344,13 @@ def render_trade_dashboard(results: dict):
     
     output = results.get("crew_output", "")
     raw_data = results.get("raw_data", {})
+    full_data = raw_data.get("full_data", {}) if isinstance(raw_data, dict) else {}
+    
     trade_details = extract_trade_details(output)
     
-    symbol = results.get("symbol", "")
-    company = results.get("company_name", symbol)
-    current_price = raw_data.get("current_price", 0)
+    symbol = results.get("ticker", "")
+    company = full_data.get("company_name", symbol) if isinstance(full_data, dict) else symbol
+    current_price = full_data.get("current_price", 0) if isinstance(full_data, dict) else 0
     
     # Header
     st.markdown(f"<h1 class='main-title'>{symbol} - {company}</h1>", unsafe_allow_html=True)
@@ -423,7 +359,8 @@ def render_trade_dashboard(results: dict):
     # Price Display
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        price_change = raw_data.get("price_change", 0)
+        price_change = full_data.get("price_change", 0) if isinstance(full_data, dict) else 0
+        price_change_pct = full_data.get("price_change_percent", 0) if isinstance(full_data, dict) else 0
         price_class = "price-up" if price_change >= 0 else "price-down"
         sign = "+" if price_change >= 0 else ""
         st.markdown(f"""
@@ -431,14 +368,14 @@ def render_trade_dashboard(results: dict):
                 <div style='color: #94a3b8; font-size: 0.9rem;'>Current Price</div>
                 <div class='price-display'>${current_price}</div>
                 <div class='{price_class}' style='font-size: 1.2rem; font-weight: 600;'>
-                    {sign}${price_change} ({sign}{raw_data.get('price_change_percent', 0)}%)
+                    {sign}${price_change} ({sign}{price_change_pct}%)
                 </div>
             </div>
         """, unsafe_allow_html=True)
     
     with col2:
-        sector = raw_data.get("sector", "N/A")
-        industry = raw_data.get("industry", "N/A")
+        sector = full_data.get("sector", "N/A") if isinstance(full_data, dict) else "N/A"
+        industry = full_data.get("industry", "N/A") if isinstance(full_data, dict) else "N/A"
         st.markdown(f"""
             <div class='metric-card'>
                 <div style='color: #94a3b8; font-size: 0.85rem;'>Sector</div>
@@ -448,7 +385,7 @@ def render_trade_dashboard(results: dict):
         """, unsafe_allow_html=True)
     
     with col3:
-        market_cap = raw_data.get("market_cap", 0)
+        market_cap = full_data.get("market_cap", 0) if isinstance(full_data, dict) else 0
         if market_cap:
             if market_cap >= 1e12:
                 mc_str = f"${market_cap/1e12:.2f}T"
@@ -484,7 +421,7 @@ def render_trade_dashboard(results: dict):
         direction_emoji = "🔴"
         direction_color = "#ef4444"
     else:
-        card_class = "metric-card"
+        card_class = "trade-card trade-card-neutral"
         direction_emoji = "⚪"
         direction_color = "#94a3b8"
     
@@ -563,61 +500,67 @@ def render_trade_dashboard(results: dict):
                         <div style='color: #94a3b8; font-size: 0.7rem;'>Trail 20%</div>
                     </div>
                 """, unsafe_allow_html=True)
-    
-    # Risk Metrics
-    if trade_details["entry"] and trade_details["stop"] and trade_details["target1"]:
-        risk = abs(trade_details["entry"] - trade_details["stop"])
-        reward1 = abs(trade_details["target1"] - trade_details["entry"])
-        rr1 = reward1 / risk if risk > 0 else 0
         
-        st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
-        m1, m2, m3 = st.columns(3)
-        
-        with m1:
-            st.markdown(f"""
-                <div class='metric-card' style='text-align: center;'>
-                    <div style='color: #94a3b8; font-size: 0.85rem;'>Risk/Reward (T1)</div>
-                    <div style='color: #f59e0b; font-size: 1.8rem; font-weight: 700;'>1:{rr1:.1f}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        
-        with m2:
-            risk_pct = (risk / trade_details["entry"] * 100) if trade_details["entry"] else 0
-            st.markdown(f"""
-                <div class='metric-card' style='text-align: center;'>
-                    <div style='color: #94a3b8; font-size: 0.85rem;'>Risk per Share</div>
-                    <div style='color: #ef4444; font-size: 1.8rem; font-weight: 700;'>${risk:.2f} ({risk_pct:.1f}%)</div>
-                </div>
-            """, unsafe_allow_html=True)
-        
-        with m3:
-            duration = trade_details.get("duration", "")
-            st.markdown(f"""
-                <div class='metric-card' style='text-align: center;'>
-                    <div style='color: #94a3b8; font-size: 0.85rem;'>Expected Duration</div>
-                    <div style='color: #818cf8; font-size: 1.5rem; font-weight: 700;'>{duration or 'N/A'}</div>
-                </div>
-            """, unsafe_allow_html=True)
+        # Risk Metrics
+        if trade_details["entry"] and trade_details["stop"] and trade_details["target1"]:
+            risk = abs(trade_details["entry"] - trade_details["stop"])
+            reward1 = abs(trade_details["target1"] - trade_details["entry"])
+            rr1 = reward1 / risk if risk > 0 else 0
+            
+            st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+            m1, m2, m3 = st.columns(3)
+            
+            with m1:
+                st.markdown(f"""
+                    <div class='metric-card' style='text-align: center;'>
+                        <div style='color: #94a3b8; font-size: 0.85rem;'>Risk/Reward (T1)</div>
+                        <div style='color: #f59e0b; font-size: 1.8rem; font-weight: 700;'>1:{rr1:.1f}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with m2:
+                risk_pct = (risk / trade_details["entry"] * 100) if trade_details["entry"] else 0
+                st.markdown(f"""
+                    <div class='metric-card' style='text-align: center;'>
+                        <div style='color: #94a3b8; font-size: 0.85rem;'>Risk per Share</div>
+                        <div style='color: #ef4444; font-size: 1.8rem; font-weight: 700;'>${risk:.2f} ({risk_pct:.1f}%)</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            with m3:
+                duration = trade_details.get("duration", "")
+                st.markdown(f"""
+                    <div class='metric-card' style='text-align: center;'>
+                        <div style='color: #94a3b8; font-size: 0.85rem;'>Expected Duration</div>
+                        <div style='color: #818cf8; font-size: 1.5rem; font-weight: 700;'>{duration or 'N/A'}</div>
+                    </div>
+                """, unsafe_allow_html=True)
     
     st.markdown("</div>", unsafe_allow_html=True)
     
     # Tabs for detailed analysis
     st.markdown("---")
-    tab1, tab2, tab3 = st.tabs(["📊 Technical Chart", "📋 Full Analysis", "📰 Key Metrics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Technical Chart", "📋 Full Analysis", "📰 Key Metrics", "🤖 Agent Reports"])
     
     with tab1:
-        render_price_chart(symbol, raw_data)
+        render_price_chart(symbol)
     
     with tab2:
         st.markdown("### Complete Crew Analysis")
-        st.text_area("", value=str(output), height=600, disabled=True)
+        st.text_area("", value=str(output), height=600, disabled=True, label_visibility="collapsed")
     
     with tab3:
-        render_key_metrics(raw_data)
+        render_key_metrics(full_data)
+    
+    with tab4:
+        render_agent_reports(results.get("agent_outputs", {}))
 
 
 def render_key_metrics(data: dict):
     """Render key financial metrics in a grid"""
+    if not isinstance(data, dict):
+        st.warning("No metrics data available")
+        return
     
     col1, col2, col3 = st.columns(3)
     
@@ -648,10 +591,7 @@ def render_key_metrics(data: dict):
             for label, value in metrics:
                 if value is not None:
                     if isinstance(value, float):
-                        if abs(value) < 10:
-                            formatted = f"{value:.2f}"
-                        else:
-                            formatted = f"{value:.2f}"
+                        formatted = f"{value:.2f}"
                     else:
                         formatted = str(value)
                 else:
@@ -690,12 +630,39 @@ def render_key_metrics(data: dict):
                 """, unsafe_allow_html=True)
 
 
+def render_agent_reports(agent_outputs: dict):
+    """Render individual agent analysis reports"""
+    if not agent_outputs:
+        st.info("No individual agent reports available")
+        return
+    
+    agent_icons = {
+        "Chief Data Scientist": "🔬",
+        "Senior Global Macro": "🌍",
+        "Chief Technical Strategist": "📈",
+        "Senior Valuation": "💰",
+        "Market Sentiment": "🧠",
+        "Senior Equity Research": "🔬",
+        "Chief Investment Officer": "👑",
+    }
+    
+    for role, output in agent_outputs.items():
+        icon = "🤖"
+        for key, val in agent_icons.items():
+            if key in role:
+                icon = val
+                break
+        
+        with st.expander(f"{icon} {role}", expanded=False):
+            st.markdown(output)
+
+
 # ============================================================
-# SIDEBAR
+# SIDEBAR — API KEY MANAGEMENT
 # ============================================================
 
 def render_sidebar():
-    """Render the application sidebar"""
+    """Render the application sidebar with per-agent API key management"""
     
     st.sidebar.markdown("""
         <div style='text-align: center; padding: 1rem 0;'>
@@ -707,24 +674,58 @@ def render_sidebar():
     
     st.sidebar.markdown("---")
     
-    # API Key inputs
+    # API Key Management Section
     st.sidebar.markdown("<h4 style='color: #818cf8;'>🔑 API Configuration</h4>", unsafe_allow_html=True)
     
-    nvidia_key = st.sidebar.text_input(
-        "NVIDIA API Key",
-        type="password",
-        value=os.getenv("NVIDIA_API_KEY", ""),
-        help="Get free key from build.nvidia.com",
-    )
+    use_secrets = st.sidebar.checkbox("Use .streamlit/secrets.toml (recommended)", value=True, key="use_secrets")
     
-    if nvidia_key:
-        os.environ["NVIDIA_API_KEY"] = nvidia_key
+    if not use_secrets:
+        st.sidebar.markdown("<p style='color: #94a3b8; font-size: 0.8rem;'>Enter per-agent NVIDIA API keys:</p>", unsafe_allow_html=True)
+        
+        for agent_id, env_var in NVIDIA_AGENT_KEY_MAP.items():
+            display_name = agent_id.replace("_", " ").title()
+            key_val = st.sidebar.text_input(
+                f"{display_name}",
+                type="password",
+                key=f"api_key_{agent_id}",
+                placeholder="nvapi-...",
+                help=f"Env var: {env_var}"
+            )
+            if key_val:
+                os.environ[env_var] = key_val
+        
+        fallback = st.sidebar.text_input(
+            "🔄 Fallback NVIDIA Key",
+            type="password",
+            key="nvidia_fallback",
+            placeholder="nvapi-...",
+            help="NVIDIA_API_KEY fallback"
+        )
+        if fallback:
+            os.environ["NVIDIA_API_KEY"] = fallback
     
-    st.sidebar.markdown("""
-        <div style='font-size: 0.75rem; color: #64748b; margin-top: 0.5rem;'>
-            💡 <a href='https://build.nvidia.com/explore/discover' target='_blank' style='color: #818cf8;'>Get free NVIDIA API key</a>
-        </div>
-    """, unsafe_allow_html=True)
+    # API Status Dashboard
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("<h4 style='color: #818cf8;'>📊 Agent Key Status</h4>", unsafe_allow_html=True)
+    
+    status = get_all_agent_status()
+    all_ok = True
+    for agent_id, info in status.items():
+        display_name = agent_id.replace("_", " ").title()
+        if info["configured"]:
+            st.sidebar.markdown(
+                f"<span class='api-ok'>✅ {display_name}</span> "
+                f"<span class='api-key-display'>{info['key_preview']}</span>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.sidebar.markdown(f"<span class='api-missing'>❌ {display_name}</span>", unsafe_allow_html=True)
+            all_ok = False
+    
+    if all_ok:
+        st.sidebar.success("All agents configured!")
+    else:
+        st.sidebar.warning("Some agents missing keys")
     
     st.sidebar.markdown("---")
     
@@ -802,10 +803,13 @@ def main():
     
     # Execute analysis
     if analyze_button and symbol:
-        # Validate API key
-        if not os.getenv("NVIDIA_API_KEY"):
-            st.error("⚠️ Please enter your NVIDIA API Key in the sidebar first!")
-            st.info("Get your free API key from: https://build.nvidia.com/explore/discover")
+        # Validate API keys
+        valid, missing = validate_all_keys()
+        if not valid:
+            st.error("❌ Missing API keys for some agents!")
+            with st.expander("Missing Keys"):
+                st.code("\\n".join(missing))
+            st.info("Add keys in the sidebar or set them in `.streamlit/secrets.toml`")
             return
         
         # Validate symbol format
@@ -815,8 +819,20 @@ def main():
         
         # Run analysis
         try:
-            with st.spinner("🧠 Initializing Master Trading Crew..."):
-                results = run_master_crew(symbol)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            status_text.info("📡 Fetching market data...")
+            progress_bar.progress(10)
+            
+            status_text.info("🧠 Deploying 7 expert agents with individual NVIDIA API keys...")
+            progress_bar.progress(30)
+            
+            results = run_master_crew(symbol)
+            
+            progress_bar.progress(100)
+            status_text.empty()
+            progress_bar.empty()
             
             if "error" in results:
                 st.error(f"❌ Error: {results['error']}")
@@ -825,9 +841,27 @@ def main():
             # Render results
             render_trade_dashboard(results)
             
+            # Download option
+            st.markdown("---")
+            report_data = {
+                "ticker": symbol,
+                "timestamp": datetime.now().isoformat(),
+                "final_recommendation": str(results.get("crew_output", "")),
+                "agent_outputs": results.get("agent_outputs", {}),
+            }
+            
+            st.download_button(
+                label="📥 Download Full Report (JSON)",
+                data=json.dumps(report_data, indent=2),
+                file_name=f"master_crew_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+            )
+            
         except Exception as e:
             st.error(f"❌ Analysis failed: {str(e)}")
-            st.info("Please check your API key and try again. If the issue persists, the service may be temporarily unavailable.")
+            st.info("Please check your API keys and try again.")
+            with st.expander("🔍 Debug Details"):
+                st.code(traceback.format_exc())
     
     elif analyze_button and not symbol:
         st.warning("⚠️ Please enter a stock symbol")
